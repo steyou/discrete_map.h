@@ -1,6 +1,5 @@
 #ifndef PARTIAL_MAP_H
 #define PARTIAL_MAP_H
-#include <iostream>
 
 #include <vector>
 #include <cstddef>
@@ -116,7 +115,6 @@ class partial_map {
                    //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
                    //std::cout<<std::to_string(_load_factor()) + " " + std::to_string(_policy->threshold()) + '\n';
                    if (_load_factor() > _policy->threshold()) {
-                       std::cout<<"OH SHIT RESIZE ME\n";
                        _resize();
                    }
                    return true;
@@ -142,43 +140,84 @@ class partial_map {
         * Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
         */
        bool find(const K key, T& value) const noexcept {
-           //driver loop. get a starting index from hash function then move down the indices vector from there.
-           for (size_t h = _key2index(key); h < _index_probe.size(); h++) {
-
-               const std::optional<size_t>& current_kv_index = _index_probe.at(h);
+           auto find_logic = [&](size_t i) {
+               const std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
                if (current_kv_index.has_value()) {
                    if (key == _keys[current_kv_index.value()]) {
                        value = _values[current_kv_index.value()];
-                       return true;
+                       return 1;
                    }
+		   return 0;
                }
                //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. under linear probing the insert() function doesn't skip empty slots.
                else {
-                 return false;
+                 return -1;
                }
+           };
+
+           //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
+           size_t k2i = _key2index(key, _index_probe.size());
+           for (size_t i = k2i; i < _index_probe.size(); i++) {
+               int result = find_logic(i);
+	       if (result == 1) {
+                   return true;
+               }
+	       else if (result == -1) {
+                   return false;
+	       }
+           }
+           for (size_t i = 0; i < k2i; i++) {
+               int result = find_logic(i);
+	       if (result == 1) {
+                   return true;
+               }
+	       else if (result == -1) {
+                   return false;
+	       }
            }
            return false; // unlikely to reach here but good measure. 
        }
 
        bool erase(const K& key) {
-           //driver loop. get a starting index from hash function then move down the indices vector from there.
-           for (size_t h = _key2index(key); h < _index_probe.size(); h++) {
-			   
-               std::optional<size_t>& current_kv_index = _index_probe.at(h);
+
+           auto erase_pair_if_index_match = [&](size_t i) {
+               std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
                if (current_kv_index.has_value()) {
                    if (key == _keys[current_kv_index.value()]) {
                        _keys.erase(_keys.begin() + current_kv_index.value());
                        _values.erase(_values.begin() + current_kv_index.value());
                        current_kv_index.reset();
-                       return true;
+                       return 1;
                    }
+	           return 0;
                }
                //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. the insert() function doesn't skip empty slots.
                else {
-                   return false;
+                   return -1;
                }
+	   };
+
+           //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
+           size_t k2i = _key2index(key, _index_probe.size());
+           for (size_t h = k2i; h < _index_probe.size(); h++) {
+               int result = erase_pair_if_index_match(h);
+	       if (result == 1) {
+                   return true;
+               }
+	       else if (result == -1) {
+                   return false;
+	       }
+           }
+           for (size_t i = 0; i < k2i; i++) {
+               int result = erase_pair_if_index_match(i);
+	       if (result == 1) {
+                   return true;
+               }
+	       else if (result == -1) {
+                   return false;
+	       }
            }
            return false; // unlikely to reach here but good measure. 
        }
