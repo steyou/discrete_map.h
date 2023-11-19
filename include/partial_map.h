@@ -1,69 +1,87 @@
 #ifndef PARTIAL_MAP_H
 #define PARTIAL_MAP_H
+#include <iostream>
 
 #include <vector>
 #include <cstddef>
 #include <optional>
 #include <memory>
+#include <functional>
 
-#include "BitwiseMPolicy.h"
+#include "BitwiseMapPolicy.h"
 #include "MapPolicy.h"
 
 template<
     typename K,
     typename T,
-    typename P = BitwiseMPolicy
+    typename P = BitwiseMapPolicy
 >
 class partial_map {
-    private:
-       std::hash _hash;
-       std::unique_ptr<MapPolicy<>> _policy;
+    //private:
+    public:
+       std::hash<K> _hash;
+       std::unique_ptr<MapPolicy> _policy;
 
-       //This vector is inspired by the concept of buckets in unordered_map. We let the hash function 'arbitrarily' choose where to store the pair, and point to _keys and _values by storing their shared index here. No need for pointers. However, probing and resizing is abstracted away from the kv pairs (because public getter interface) and managed using this vector too.
-       std::vector<std::optional<size_t>> _hash2kv_probe;
+       //This vector acts as a container of indices, inspired by unordered_map buckets. It's used to store the shared index of a key-value pair, determined at insertion after the hash function derives the 'bucket'. Unlike the existing STL maps, this vector is what abstracts away probing, resizing, and collision management, keeping these operations separate from the key-value pairs. That allows the kv-pairs can be public const ref& exposed with little risk.
+       std::vector<std::optional<size_t>> _index_probe;
 
        std::vector<K> _keys;
        std::vector<T> _values;
 
        float _load_factor() const noexcept {
-           return static_cast<float>(_keys.size() / _hash2kv_probe.size());
+           return _keys.size() / _index_probe.size();
        }
 
-       size_t _probe_index(const K& key) const noexcept {
-           size_t hash = _hash(key);
-	   return _policy.get_index(hash, _hash2kv_probe.size());
+       size_t _key2index(const K& key, size_t capacity) const noexcept {
+           size_t hash_raw = _hash(key);
+           return _policy->get_index(hash_raw, capacity);
        } 
 
        void _resize() {
-           size_t new_size = _policy.next_capacity(_hash2kv_probe.size());
+           size_t new_size = _policy->next_capacity(_index_probe.size());
+	   std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
 
-	   //create a new vecttor that will be larger than the one currently.
-	   std::vector<std::optional<size_t>> new_h2kvp(new_size, std::nullopt);
+	   //skip reading this declaration until you read the code below. Then this will make sense.
+	   auto move_index_if_slot_avail = [&](size_t i, const std::optional<size_t>& kv_pair_index){
+               if (!the_bigger_probe[i].has_value()) {
+                   the_bigger_probe[i] = std::move(kv_pair_index);
+                   return true;
+               }
+               return false;
+	   };
 
 	   //traverse the old vector and rehash (rebalance) the values into it
-	   for (const auto& kv : _hash2kv_probe) {
-               if (kv.hasValue()) {
-		   //get the key at old location
-                   K& key = _keys[kv.value()];
+           for (std::optional<size_t>& kv_pair_index : _index_probe) {
+               if (kv_pair_index.has_value()) {
+                   //get the key at old location
+                   K& key = _keys[kv_pair_index.value()];
 
-		   //create a hash index that respects the new capacity
-                   size_t new_hash_index = _probe_index(key);
+                   //take that key and calculate a new kv-index for the new capacity
+                   size_t new_hash_index = _key2index(key, new_size);
 
-		   //move the old index location into the new location. we never touch the kv pairs or forget where to find them.
-		   new_h2kvp[new_hash_index] = std::move(kv.value());
-	       }
-	   }
-
-	   _hash2kv_probe = newh2kvp;
+		   //do collision detection again like we did in insert(). start at the index given by the hash and circle around if we reach the end.
+		   for (size_t i = new_hash_index; i < the_bigger_probe.size(); i++) {
+                       if (move_index_if_slot_avail(i, kv_pair_index)) {
+                           goto nested_for_escape;
+                       }
+                   }
+		   for (size_t i = 0; i < new_hash_index; i++) {
+                       if (move_index_if_slot_avail(i, kv_pair_index)) {
+                           goto nested_for_escape;
+                       }
+                   }
+		   //TODO: if we reach here then something's gone wrong. We can't rehash because the probe is somehow full. unlikely but should provide some logic for that.
+		   
+                   nested_for_escape:
+               }
+           }
+           _index_probe = the_bigger_probe;
        }
 
-    public:
-       partial_map() : _hash(std::hash<K>{}) {
-	   _policy = std::make_unique(P);
-           _hash2kv_probe(_policy.min_capacity(), std::nullopt);
-       }
+    //public:
+       partial_map() : _policy(std::make_unique<P>()), _index_probe(_policy->min_capacity(), std::nullopt) {}
 
-       const std:vector<K>& keys() const noexcept {
+       const std::vector<K>& keys() const noexcept {
            return _keys;
        }
 
@@ -72,87 +90,98 @@ class partial_map {
        }
 
        /**
-	* Inserts a key and value in the map.
-	*/
-       bool insert(const K, const T) noexcept {
-	   //we're just using boring linear probing.
+        * Inserts a key and value in the map.
+        */
+       bool insert(const K key, const T value) {
+           //we're just using boring linear probing.
 
-	   //loop the _hash2kv_probe starting at the index derived from the hash function
-	   for (size_t h  = _probe_index(K); h < _hash2kv_probe.size(); h++) {
+           auto ins_fn = [&](size_t h) {
+           //auto ins_fn = [](size_t& h, K& key, T& value, std::vector<std::optional<size_t>>& index_probe, std::vector<K>& keys, std::vector<T>& values, std::unique_ptr<MapPolicy>& policy, std::function& load_factor_fn, std::function& resize_fn) {
+               std::optional<size_t>& current_kv_index = _index_probe.at(h);
 
-	       //loop through until we find an empty slot.
-	       size_t& current_kv_index = _hash2kv_probe.at(h);
-
-	       if (current_kv_index.hasValue()) {
-		   //Check for special case -- overwriting value with existing key
-		   //You can't inline this if statement with the first using && because you want to do nothing if the keys don't match. In that case, the loop is incrementing until one of the return blocks become true.
-                   if (K == _keys[current_kv_index.value()]) {
-		       _values[c] = T;
-		       return true;
-		   }
-	       }
-	       else {
-	           //no value here and no duplicate key found - insert here!
-		   current_kv_index = _keys.size(); //this is intentionally the first insertion because it's always 1 higher than the last index
-                   _keys.push_back(K);
-		   _values.push_back(T);
-
-		   //Check if we need to resize and rebalance
-		   //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
-		   if (_load_factor() > _policy.threshold()) {
-                       _resize();
-		   }
-
-		   return true;
+               if (current_kv_index.has_value()) {
+                   //Check for special case -- overwriting value with existing key. We keep waiting if not same.
+                   if (key == _keys[current_kv_index.value()]) {
+                       _values[current_kv_index.value()] = value;
+                       return true;
+                   }
                }
-	   }
-	   return false;
+               else {
+                   //no value here and no duplicate key found - insert here!
+                   current_kv_index = _keys.size(); //this is intentionally the first insertion because it's always 1 higher than the last index
+                   _keys.push_back(key);
+                   _values.push_back(value);
+
+                   //Check if we need to resize and rebalance
+                   //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
+                   //std::cout<<std::to_string(_load_factor()) + " " + std::to_string(_policy->threshold()) + '\n';
+                   if (_load_factor() > _policy->threshold()) {
+                       std::cout<<"OH SHIT RESIZE ME\n";
+                       _resize();
+                   }
+                   return true;
+               }
+               return false;
+           };
+
+           //loop the _index_probe starting at the index derived from the hash function. go to index 0 if index_probe is full to the end. stop when we're back at where we started.
+           size_t probe_ix = _key2index(key, _index_probe.size());
+           for (size_t h = probe_ix; h < _index_probe.size(); h++) {
+               //if (ins_fn(h, key, value, _index_probe, _keys, _values, _policy, _load_factor, _resize)) return true;
+               if (ins_fn(h)) return true;
+           }
+           for (size_t h = 0; h < probe_ix; h++) {
+               //if (ins_fn(h, key, value, _index_probe, _keys, _values, _policy, _load_factor, _resize)) return true;
+               if (ins_fn(h)) return true;
+           }
+
+           return false; //unlikely but good measure. some maps would infinite loop instead.
        }
 
        /**
-	* Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
-	*/
+        * Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
+        */
        bool find(const K key, T& value) const noexcept {
-	   //driver loop. get a starting index from hash function then move down the indices vector from there.
-	   for (size_t h = _probe_index(K); h < _hash2kv_probe.size(); h++) {
-	       
-	       size_t& current_kv_index = _hash2kv_probe.at(h);
+           //driver loop. get a starting index from hash function then move down the indices vector from there.
+           for (size_t h = _key2index(key); h < _index_probe.size(); h++) {
 
-	       if (current_kv_index.hasValue()) {
-		   if (K == _keys[current_kv_index.value()]) {
-		       T = _values[current_kv_index.value()];
-		       return true;
-		   }
-	       }
-	       //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. the insert() function doesn't skip empty slots.
-	       else {
-                   return false;
+               const std::optional<size_t>& current_kv_index = _index_probe.at(h);
+
+               if (current_kv_index.has_value()) {
+                   if (key == _keys[current_kv_index.value()]) {
+                       value = _values[current_kv_index.value()];
+                       return true;
+                   }
                }
-	   }
+               //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. under linear probing the insert() function doesn't skip empty slots.
+               else {
+                 return false;
+               }
+           }
            return false; // unlikely to reach here but good measure. 
        }
 
        bool erase(const K& key) {
-	   //driver loop. get a starting index from hash function then move down the indices vector from there.
-	   for (size_t h = _probe_index(K); h < _hash2kv_probe.size(); h++) {
-	       
-	       size_t& current_kv_index = _hash2kv_probe.at(h);
+           //driver loop. get a starting index from hash function then move down the indices vector from there.
+           for (size_t h = _key2index(key); h < _index_probe.size(); h++) {
+			   
+               std::optional<size_t>& current_kv_index = _index_probe.at(h);
 
-	       if (current_kv_index.hasValue()) {
-		   if (K == _keys[current_kv_index.value()]) {
-		       _keys.erase(_keys.begin() + current_kv_index.value());
-		       _values.erase(_values.begin() + current_kv_index.value());
-		       current_kv_index.reset();
-		       return true;
-		   }
-	       }
-	       //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. the insert() function doesn't skip empty slots.
-	       else {
+               if (current_kv_index.has_value()) {
+                   if (key == _keys[current_kv_index.value()]) {
+                       _keys.erase(_keys.begin() + current_kv_index.value());
+                       _values.erase(_values.begin() + current_kv_index.value());
+                       current_kv_index.reset();
+                       return true;
+                   }
+               }
+               //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. the insert() function doesn't skip empty slots.
+               else {
                    return false;
                }
-	   }
+           }
            return false; // unlikely to reach here but good measure. 
        }
-}
+};
 
 #endif
