@@ -41,7 +41,7 @@ class partial_map {
 	   std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
 
 	   //skip reading this declaration until you read the code below. Then this will make sense.
-	   auto move_index_if_slot_avail = [&](size_t i, const std::optional<size_t>& kv_pair_index){
+	   auto move_index_if_slot_avail = [&](size_t i, const std::optional<size_t>& kv_pair_index) -> bool {
                if (!the_bigger_probe[i].has_value()) {
                    the_bigger_probe[i] = std::move(kv_pair_index);
                    return true;
@@ -94,31 +94,29 @@ class partial_map {
        bool insert(const K key, const T value) {
            //we're just using boring linear probing.
 
-           auto ins_fn = [&](size_t h) {
-           //auto ins_fn = [](size_t& h, K& key, T& value, std::vector<std::optional<size_t>>& index_probe, std::vector<K>& keys, std::vector<T>& values, std::unique_ptr<MapPolicy>& policy, std::function& load_factor_fn, std::function& resize_fn) {
-               std::optional<size_t>& current_kv_index = _index_probe.at(h);
+           auto ins_fn = [&](size_t i) -> bool {
+               std::optional<size_t>& current_kv_index = _index_probe.at(i);
+               if (!current_kv_index.has_value()) {
 
-               if (current_kv_index.has_value()) {
-                   //Check for special case -- overwriting value with existing key. We keep waiting if not same.
-                   if (key == _keys[current_kv_index.value()]) {
-                       _values[current_kv_index.value()] = value;
-                       return true;
-                   }
-               }
-               else {
-                   //no value here and no duplicate key found - insert here!
-                   current_kv_index = _keys.size(); //this is intentionally the first insertion because it's always 1 higher than the last index
+                   //this slot is empty so we will store the kv index here.
+                   current_kv_index = _keys.size(); 
+
                    _keys.push_back(key);
                    _values.push_back(value);
 
                    //Check if we need to resize and rebalance
                    //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
-                   //std::cout<<std::to_string(_load_factor()) + " " + std::to_string(_policy->threshold()) + '\n';
                    if (_load_factor() > _policy->threshold()) {
                        _resize();
                    }
                    return true;
                }
+               //Check for special case -- overwriting value with existing key. We keep waiting if not same.
+               else if (key == _keys[current_kv_index.value()]) {
+                   _values[current_kv_index.value()] = value;
+                   return true;
+               }
+
                return false;
            };
 
@@ -140,84 +138,47 @@ class partial_map {
         * Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
         */
        bool find(const K key, T& value) const noexcept {
-           auto find_logic = [&](size_t i) {
+           auto find_logic = [&](size_t i) -> bool {
                const std::optional<size_t>& current_kv_index = _index_probe.at(i);
-
-               if (current_kv_index.has_value()) {
-                   if (key == _keys[current_kv_index.value()]) {
-                       value = _values[current_kv_index.value()];
-                       return 1;
-                   }
-		   return 0;
+               if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                   value = _values[current_kv_index.value()];
+                   return true;
                }
-               //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. under linear probing the insert() function doesn't skip empty slots.
-               else {
-                 return -1;
-               }
+               return false;
            };
 
            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
            size_t k2i = _key2index(key, _index_probe.size());
            for (size_t i = k2i; i < _index_probe.size(); i++) {
-               int result = find_logic(i);
-	       if (result == 1) {
-                   return true;
-               }
-	       else if (result == -1) {
-                   return false;
-	       }
+               if (find_logic(i)) return true;
            }
            for (size_t i = 0; i < k2i; i++) {
-               int result = find_logic(i);
-	       if (result == 1) {
-                   return true;
-               }
-	       else if (result == -1) {
-                   return false;
-	       }
+               if (find_logic(i)) return true;
            }
            return false; // unlikely to reach here but good measure. 
        }
 
        bool erase(const K& key) {
-
-           auto erase_pair_if_index_match = [&](size_t i) {
+           auto erase_pair_if_index_match = [&](size_t i) -> bool {
                std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
-               if (current_kv_index.has_value()) {
-                   if (key == _keys[current_kv_index.value()]) {
-                       _keys.erase(_keys.begin() + current_kv_index.value());
-                       _values.erase(_values.begin() + current_kv_index.value());
-                       current_kv_index.reset();
-                       return 1;
-                   }
-	           return 0;
+               if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                   _keys.erase(_keys.begin() + current_kv_index.value());
+                   _values.erase(_values.begin() + current_kv_index.value());
+                   current_kv_index.reset();
+                   return true;
                }
-               //didn't find existing key. we assume if there is an empty spot, the key doesn't exist. the insert() function doesn't skip empty slots.
-               else {
-                   return -1;
-               }
+               //did not erase	       
+	       return false;
 	   };
 
            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
            size_t k2i = _key2index(key, _index_probe.size());
-           for (size_t h = k2i; h < _index_probe.size(); h++) {
-               int result = erase_pair_if_index_match(h);
-	       if (result == 1) {
-                   return true;
-               }
-	       else if (result == -1) {
-                   return false;
-	       }
+           for (size_t i = k2i; i < _index_probe.size(); i++) {
+               if (erase_pair_if_index_match(i)) return true;
            }
            for (size_t i = 0; i < k2i; i++) {
-               int result = erase_pair_if_index_match(i);
-	       if (result == 1) {
-                   return true;
-               }
-	       else if (result == -1) {
-                   return false;
-	       }
+               if (erase_pair_if_index_match(i)) return true;
            }
            return false; // unlikely to reach here but good measure. 
        }
