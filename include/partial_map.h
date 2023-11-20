@@ -40,7 +40,7 @@ class partial_map {
            for (size_t i = start_index; i < _index_probe.size(); i++) {
                if (callback(i)) return true;
            }
-	   //if start_index != 0 then we must circle to the beginning
+           //if start_index != 0 then we must circle to the beginning
            for (size_t i = 0; i < start_index; i++) {
                if (callback(i)) return true;
            }
@@ -50,18 +50,18 @@ class partial_map {
 
        void _resize() {
            size_t new_size = _policy->next_capacity(_index_probe.size());
-	   std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
+           std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
 
-	   auto move_index_if_slot_avail = [&](const size_t i, const std::optional<size_t>& old_kv_index) {
+           auto move_index_if_slot_avail = [&](const size_t i, const std::optional<size_t>& old_kv_index) {
                if (!the_bigger_probe[i].has_value()) {
                    the_bigger_probe[i] = std::move(old_kv_index);
                    return true;
                }
-	       //did not move
+               //did not move
                return false;
-	   };
+           };
 
-	   //traverse the old vector and rehash (rebalance) the values into it
+           //traverse the old vector and rehash (rebalance) the values into it
            for (std::optional<size_t>& old_kv_index : _index_probe) {
                if (old_kv_index.has_value()) {
                    //get the key at old location using current index
@@ -70,13 +70,13 @@ class partial_map {
                    //take that key and calculate a new kv-index respecting the new capacity
                    size_t new_hash_index = _key2index(key, new_size);
 
-		   //put the new kv index at the new location. We don't actually move the key.
-		   //TODO this loop is similar to _traverse_index_probe
+                   //put the new kv index at the new location. We don't actually move the key.
+                   //TODO this loop is similar to _traverse_index_probe
                    for (size_t i = new_hash_index; i < the_bigger_probe.size(); i++) {
-		       if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
+                       if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
                    }
                    for (size_t i = 0; i < new_hash_index; i++) {
-		       if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
+                       if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
                    }
 
                    nested_for_escape:
@@ -100,8 +100,8 @@ class partial_map {
         * Inserts a key and value in the map.
         */
        bool insert(const K key, const T value) {
-	   //TODO object construction in-place
-	   //TODO move semantics
+           //TODO object construction in-place
+           //TODO move semantics
            //we're just using boring linear probing.
 
            auto ins_fn = [&](const size_t i) {
@@ -127,12 +127,12 @@ class partial_map {
                    return true;
                }
 
-	       //could not insert. we will revisit at the next index.
+           //could not insert. we will revisit at the next index.
                return false;
            };
 
-	   size_t k2i = _key2index(key, _index_probe.size());
-	   return _circular_traversal(k2i, ins_fn);
+           size_t k2i = _key2index(key, _index_probe.size());
+           return _circular_traversal(k2i, ins_fn);
        }
 
        /**
@@ -145,13 +145,13 @@ class partial_map {
                    value = _values[current_kv_index.value()];
                    return true;
                }
-	       //did not find
+           //did not find
                return false;
            };
 
            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
            size_t k2i = _key2index(key, _index_probe.size());
-	   return _circular_traversal(k2i, find_logic);
+           return _circular_traversal(k2i, find_logic);
        }
 
        bool erase(const K& key) {
@@ -164,13 +164,13 @@ class partial_map {
                    current_kv_index.reset();
                    return true;
                }
-               //did not erase	       
-	       return false;
-	   };
+               //did not erase         
+               return false;
+           };
 
            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
            size_t k2i = _key2index(key, _index_probe.size());
-	   return _circular_traversal(k2i, erase_pair_if_index_match);
+           return _circular_traversal(k2i, erase_pair_if_index_match);
        }
 };
 
