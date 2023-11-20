@@ -31,12 +31,12 @@ class partial_map {
            return _keys.size() / _index_probe.size();
        }
 
-       size_t _key2index(const K& key, size_t capacity) const noexcept {
+       size_t _key2index(const K& key, const size_t capacity) const noexcept {
            size_t hash_raw = _hash(key);
            return _policy->get_index(hash_raw, capacity);
        } 
 
-       bool _circular_traversal(size_t start_index, std::function<bool(const size_t)> callback) const noexcept {
+       bool _circular_traversal(const size_t start_index, std::function<bool(const size_t)> callback) const noexcept {
            for (size_t i = start_index; i < _index_probe.size(); i++) {
                if (callback(i)) return true;
            }
@@ -52,7 +52,7 @@ class partial_map {
            size_t new_size = _policy->next_capacity(_index_probe.size());
 	   std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
 
-	   auto move_index_if_slot_avail = [&](size_t i, std::optional<size_t>& old_kv_index) {
+	   auto move_index_if_slot_avail = [&](const size_t i, const std::optional<size_t>& old_kv_index) {
                if (!the_bigger_probe[i].has_value()) {
                    the_bigger_probe[i] = std::move(old_kv_index);
                    return true;
@@ -100,9 +100,11 @@ class partial_map {
         * Inserts a key and value in the map.
         */
        bool insert(const K key, const T value) {
+	   //TODO object construction in-place
+	   //TODO move semantics
            //we're just using boring linear probing.
 
-           auto ins_fn = [&](size_t i) {
+           auto ins_fn = [&](const size_t i) {
                std::optional<size_t>& current_kv_index = _index_probe.at(i);
                if (!current_kv_index.has_value()) {
 
@@ -136,7 +138,7 @@ class partial_map {
        /**
         * Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
         */
-       bool find(const K key, T& value) const noexcept {
+       bool find(const K& key, T& value) const noexcept {
            auto find_logic = [&](size_t i) {
                const std::optional<size_t>& current_kv_index = _index_probe.at(i);
                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
