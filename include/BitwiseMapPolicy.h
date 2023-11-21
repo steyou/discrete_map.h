@@ -17,6 +17,15 @@ struct BitwiseMapPolicy : public MapPolicy {
         return 8u;
     }
 
+    constexpr size_t max_capacity() const noexcept override {
+        unsigned int value = min_capacity();
+        unsigned int mask = 1u << (sizeof(unsigned int)*8 - 1);
+	while ((value & mask) == 0) {
+            value <<= 1;
+	}
+        return value;
+    }
+
     constexpr float threshold() const noexcept override {
         return 0.8f;
     }
