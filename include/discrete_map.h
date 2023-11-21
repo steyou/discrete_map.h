@@ -16,7 +16,7 @@
 template<class Key,
          class T,
          class P = BitwiseMapPolicy>
-class partial_map {
+class discrete_map {
     private:
        std::hash<Key> _hash;
        std::unique_ptr<MapPolicy> _policy;
@@ -98,7 +98,7 @@ class partial_map {
     public:
 //construct/copy/destroy
 
-       partial_map() : _policy(std::make_unique<P>()), _index_probe(_policy->min_capacity(), std::nullopt) {}
+       discrete_map() : _policy(std::make_unique<P>()), _index_probe(_policy->min_capacity(), std::nullopt) {}
 
 //iterators
 
