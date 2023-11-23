@@ -18,7 +18,7 @@
 
 template<class Key,
          class T,
-         class Hash = Hash<Key>,
+         class Hash = std::hash<Key>,
          class Pred = std::equal_to<Key>,
          class P = BitwiseMapPolicy>
 class discrete_map {
@@ -40,11 +40,10 @@ class discrete_map {
             for (size_t i = start_index; i < _index_probe.size(); i++) {
                 if (callback(i)) return true;
             }
-            //if start_index != 0 then we must circle to the beginning
+            //if start_index != 0 then we must circle to the beginning if end reached
             for (size_t i = 0; i < start_index; i++) {
                 if (callback(i)) return true;
             }
-
             return false; //the behavior of whatever we're calling did not happen. whether that's good or bad is not this function's responsibility.
         }
 
@@ -52,51 +51,18 @@ class discrete_map {
         F _circular_traversal(const size_t start_index, std::function<bool(const size_t, F&)> callback) const {
             F result;
             for (size_t i = start_index; i < _index_probe.size(); i++) {
-                if (callback(i, &result)) return std::move(result);
+                if (callback(i, result)) return result;
             }
-            //if start_index != 0 then we must circle to the beginning
+            //if start_index != 0 then we must circle to the beginning if end reached
             for (size_t i = 0; i < start_index; i++) {
-                if (callback(i, &result)) return std::move(result);
+                if (callback(i, result)) return result;
             }
-
-            return std::move(result); //It is assumed that the lambda function returns a F value even when the function returns false. On the last iteration, we return that value.
+            return result; //It is assumed that the lambda function returns a F value even when the function returns false. On the last iteration, we return that value.
         }
 
         void _grow_next() {
             size_t new_size = _policy->next_capacity(_index_probe.size());
-            std::vector<std::optional<size_t>> the_bigger_probe(new_size, std::nullopt);
-
-            auto move_index_if_slot_avail = [&](const size_t i, const std::optional<size_t>& old_kv_index) {
-                if (!the_bigger_probe[i].has_value()) {
-                    the_bigger_probe[i] = std::move(old_kv_index);
-                    return true;
-                }
-                //did not move
-                return false;
-            };
-
-            //traverse the old vector and rehash (rebalance) the values into it
-            for (std::optional<size_t>& old_kv_index : _index_probe) {
-                if (old_kv_index.has_value()) {
-                    //get the key at old location using current index
-                    Key& key = _keys[old_kv_index.value()];
-
-                    //take that key and calculate a new kv-index respecting the new capacity
-                    size_t new_k2i = _key2index(key, new_size);
-
-                    //put the new kv index at the new location. We don't actually move the key.
-                    //TODO this loop is similar to _traverse_index_probe
-                    for (size_t i = new_k2i; i < the_bigger_probe.size(); i++) {
-                        if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
-                    }
-                    for (size_t i = 0; i < new_k2i; i++) {
-                        if (move_index_if_slot_avail(i, old_kv_index)) goto nested_for_escape;
-                    }
-
-                    nested_for_escape:
-                }
-            }
-            _index_probe = the_bigger_probe;
+            rehash(new_size);
         }
 
     public:
@@ -122,15 +88,15 @@ class discrete_map {
                     --_val_it;
                     return *this;
                 }
-            std::pair<const Key&, T&> operator*() {
-                    return { *_key_it, *_val_it };
-            }
-            bool operator==(const iterator& other) {
-                    return _key_it == other._key_it;
-            }
-            bool operator!=(const iterator& other) {
-                    return _key_it != other._key_it;
-            }
+                std::pair<const Key&, T&> operator*() {
+                        return { *_key_it, *_val_it };
+                }
+                bool operator==(const iterator& other) {
+                        return _key_it == other._key_it;
+                }
+                bool operator!=(const iterator& other) {
+                        return _key_it != other._key_it;
+                }
         };
 
         class const_iterator {
@@ -213,18 +179,20 @@ class discrete_map {
             auto ins_fn = [&](const size_t i) {
                 std::optional<size_t>& current_kv_index = _index_probe.at(i);
                 if (!current_kv_index.has_value()) {
-
                     //this slot is empty so we will store the kv index here.
+
+                    //Check if we need to resize and rebalance. Do this first so we don't need to do 1 extra rebalance.
+                    //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
+                    if (load_factor() >= _policy->threshold()) {
+                        _grow_next();
+                    }
+
+                    //since size() is always +1 higher than the last index we do this before inserting.
                     current_kv_index = _keys.size(); 
 
                     _keys.push_back(key);
                     _values.push_back(value);
 
-                    //Check if we need to resize and rebalance
-                    //TODO possible false positives/negatives due to floating point precision. Ignoring now because inconsequential.
-                    if (load_factor() >= _policy->threshold()) {
-                        _grow_next();
-                    }
                     return true;
                 }
                 //Check for special case -- overwriting value with existing key. We keep waiting if not same.
@@ -246,8 +214,6 @@ class discrete_map {
          */
         bool erase(const Key& key) noexcept {
             auto erase_pair_if_index_match = [&](size_t i) {
-                //TODO there is a faster way involving swapping with the last element then pop_back().
-            //However, this damages the insertion order.
                 std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
                 if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
@@ -260,15 +226,43 @@ class discrete_map {
                 return false;
             };
 
+
+        /**
+         * Erases a pair, given a key. This version is faster than erase() but it disregards insertion order.
+         */
+        bool erase_unordered(const Key& key) noexcept {
+            auto erase_pair_if_index_match = [&](size_t i) {
+                std::optional<size_t>& current_kv_index = _index_probe.at(i);
+
+                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                    //swap and pop idiom
+                    std::swap(_keys[current_kv_index.value()], _keys.back());
+                    _keys.pop_back();
+
+                    std::swap(_values[current_kv_index.value()], _values[current_kv_index.value()])
+                    _keys.pop_back();
+
+                    current_kv_index.reset();
+
+                    return true;
+                }
+                //did not erase         
+                return false;
+            };
             //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
             size_t k2i = _key2index(key, _index_probe.size());
             return _circular_traversal(k2i, erase_pair_if_index_match);
         }
 
+	template<class H2, class P2>
+        void merge(discrete_map<Key, T, H2, P2>& source) {
+
+	}
+
 //observers
 
         Hash hash_function() const {
-            return Hash;
+            return Hash();
         }
 
         Pred key_eq() const {
@@ -317,20 +311,20 @@ class discrete_map {
 
         T& operator[](const Key& k) {
             T* result;
-        if(!find(k, result)) {
+            if(!find(k, result)) {
                insert(k, T{});
-           find(k, result);
-        }
-        return *result;
+               find(k, result);
+            }
+            return *result;
         }
 
         T& operator[](Key&& k) {
             T* result;
-        if(!find(k, result)) {
+            if(!find(k, result)) {
                insert(std::move(k), T{});
-           find(k, result);
-        }
-        return *result;
+               find(k, result);
+            }
+            return *result;
         }
 
         std::expected<T&, std::error_code> at(const Key& k) {
@@ -355,14 +349,44 @@ class discrete_map {
             return static_cast<float>(_keys.size() / _index_probe.size());
         }
 
-        //bool reserve(size_t n) {
-        //    if (n < _index_probe.size()) {
-        //        return false;
-        //    }
+        void reserve(size_t n) {
+            _keys.reserve(n);
+            _values.reserve(n);
+        }
 
-        //    size_t size_diff = _index_probe.size() - n;
+        void rehash(size_t n) {
+            //TODO: benchmark whether calling reserve() at the end is beneficial
 
-        //}
+            size_t next_size = _policy->next_capacity(
+                _index_probe.size(),
+                n
+            );
+            //check if we must resize. 
+            //TODO: redundant check. we did this in next_capacity(size_t, size_t). could return a bool by reference.
+            if (next_size <= _index_probe.size()) {
+                return;
+            }
+
+            //define a new array
+            std::vector<std::optional<size_t>> the_bigger_probe(next_size, std::nullopt);
+
+            auto move_index_if_slot_avail = [&](const size_t i) {
+                std::optional<size_t>& current_kv_index = _index_probe.at(i);
+                if (current_kv_index.has_value()) {
+                    //as we reserve we must rehash. it's more performant to do rehashing here than calling rehash() at the end of this function.
+                    size_t index_for_bigger_probe = _policy->get_index(
+                        hash_function()(_keys[current_kv_index.value()]),
+                        next_size
+                    );
+                    the_bigger_probe[index_for_bigger_probe] = std::move(old_kv_index);
+                    //return true;
+                }
+                //by always returning false we are intentionally traversing the whole probe (from beginning), which we want here.
+                return false;
+            };
+
+            _circular_traversal(0, move_index_if_slot_avail);
+        }
 };
 
 #endif

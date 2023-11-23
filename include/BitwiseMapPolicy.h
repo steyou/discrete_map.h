@@ -10,7 +10,17 @@ struct BitwiseMapPolicy : public MapPolicy {
     } 
 
     size_t next_capacity(size_t capacity) const noexcept override {
-	return capacity << 1;
+        return capacity << 1;
+    }
+
+    /**
+     * returns the next capacity if proposed capacity exceeds the current one.
+     */
+    size_t next_capacity(size_t capacity, size_t proposed) const noexcept override {
+        if (proposed > capacity) { //this guard prevents unnecessary resizes.
+            return next_capacity(proposed);
+        }
+        return capacity;
     }
 
     constexpr size_t min_capacity() const noexcept override {
@@ -20,9 +30,9 @@ struct BitwiseMapPolicy : public MapPolicy {
     constexpr size_t max_capacity() const noexcept override {
         unsigned int value = min_capacity();
         unsigned int mask = 1u << (sizeof(unsigned int)*8 - 1);
-	while ((value & mask) == 0) {
+    	while ((value & mask) == 0) {
             value <<= 1;
-	}
+        }
         return value;
     }
 
