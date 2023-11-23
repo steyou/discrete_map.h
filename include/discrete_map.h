@@ -357,18 +357,12 @@ class discrete_map {
         void rehash(size_t n) {
             //TODO: benchmark whether calling reserve() at the end is beneficial
 
-            size_t next_size = _policy->next_capacity(
-                _index_probe.size(),
-                n
-            );
-            //check if we must resize. 
-            //TODO: redundant check. we did this in next_capacity(size_t, size_t). could return a bool by reference.
-            if (next_size <= _index_probe.size()) {
+            if (n <= _index_probe.size()) {
                 return;
             }
 
             //define a new array
-            std::vector<std::optional<size_t>> the_bigger_probe(next_size, std::nullopt);
+            std::vector<std::optional<size_t>> the_bigger_probe(n, std::nullopt);
 
             auto move_index_if_slot_avail = [&](const size_t i) {
                 std::optional<size_t>& current_kv_index = _index_probe.at(i);
@@ -376,7 +370,7 @@ class discrete_map {
                     //as we reserve we must rehash. it's more performant to do rehashing here than calling rehash() at the end of this function.
                     size_t index_for_bigger_probe = _policy->get_index(
                         hash_function()(_keys[current_kv_index.value()]),
-                        next_size
+                        n
                     );
                     the_bigger_probe[index_for_bigger_probe] = std::move(old_kv_index);
                     //return true;

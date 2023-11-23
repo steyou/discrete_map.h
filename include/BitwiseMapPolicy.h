@@ -13,16 +13,6 @@ struct BitwiseMapPolicy : public MapPolicy {
         return capacity << 1;
     }
 
-    /**
-     * returns the next capacity if proposed capacity exceeds the current one.
-     */
-    size_t next_capacity(size_t capacity, size_t proposed) const noexcept override {
-        if (proposed > capacity) { //this guard prevents unnecessary resizes.
-            return next_capacity(proposed);
-        }
-        return capacity;
-    }
-
     constexpr size_t min_capacity() const noexcept override {
         return 8u;
     }
