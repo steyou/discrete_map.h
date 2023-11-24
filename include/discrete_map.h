@@ -4,6 +4,7 @@
 //see https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/n4950.pdf
 //§ 24.5.4.1
 
+#include <system_error>
 #include <expected>
 #include <iterator>
 #include <concepts>
@@ -16,11 +17,21 @@
 #include "BitwiseMapPolicy.h"
 #include "MapPolicy.h"
 
+template <typename Iterator>
+concept BidirectionalIterator = requires (Iterator it) {
+    { it++ } -> std::same_as<Iterator&>; // forward increment
+    { it-- } -> std::same_as<Iterator&>; // backward increment
+    { *it } ->  std::same_as<std::iterator_traits<Iterator>::reference>; // dereference
+};
+
+
 template<class Key,
          class T,
          class Hash = std::hash<Key>,
          class Pred = std::equal_to<Key>,
-         class P = BitwiseMapPolicy>
+         class P = BitwiseMapPolicy
+         class KeyAllocator = std::allocator<const Key>,
+         class ValueAllocator = std::allocator<T>>
 class discrete_map {
     private:
         std::unique_ptr<MapPolicy> _policy;
@@ -28,11 +39,13 @@ class discrete_map {
         //This vector acts as a container of indices, inspired by unordered_map buckets. It's used to store the shared index of a key-value pair, determined at insertion after the hash function derives the 'bucket'. Unlike the existing STL maps, this vector is what abstracts away probing, resizing, and collision management, keeping these operations separate from the key-value pairs. That allows the kv-pairs can be public const ref& exposed with little risk.
         std::vector<std::optional<size_t>> _index_probe;
 
-        std::vector<Key> _keys;
-        std::vector<T> _values;
+        std::vector<const Key, KeyAllocator> _keys;
+        std::vector<T, ValueAllocator> _values;
+
+        //methods
 
         size_t _key2index(const Key& k, const size_t capacity) const noexcept {
-            size_t hash_raw = Hash(k);
+            size_t hash_raw = hash_function()(k);
             return _policy->get_index(hash_raw, capacity);
         } 
 
@@ -66,62 +79,204 @@ class discrete_map {
         }
 
     public:
+        // types
+        using key_type = Key;
+        using mapped_type = T;
+        //using value_type = pair<const Key, T>;
+        using hasher = Hash;
+        using key_equal = Pred;
+
+        using key_allocator_type = KeyAllocator;
+        using key_pointer = typename allocator_traits<KeyAllocator>::pointer;
+        using key_const_pointer = typename allocator_traits<KeyAllocator>::const_pointer;
+
+        using value_allocator_type = ValueAllocator;
+        using value_pointer = typename allocator_traits<ValueAllocator>::pointer;
+        using value_const_pointer = typename allocator_traits<ValueAllocator>::const_pointer;
+
+        //using reference = value_type&;
+        //using const_reference = const value_type&;
+        //using size_type = implementation-defined ; // see 24.2
+        //using difference_type = implementation-defined ; // see 24.2
+        //using local_iterator = implementation-defined ; // see 24.2
+        //using const_local_iterator = implementation-defined ; // see 24.2
+        //using node_type = unspecified ;
+        //using insert_return_type = insert-return-type<iterator, node_type>;
+
+        using key_iterator = typename std::vector<Key, KeyAllocator>::iterator;
+        using key_const_iterator = typename std::vector<Key, KeyAllocator>::const_iterator;
 //construct/copy/destroy
 
-        discrete_map() : _policy(std::make_unique<P>()), _index_probe(_policy->min_capacity(), std::nullopt) {}
+        //default
+        discrete_map()
+            : _policy(std::make_unique<P>()), _index_probe(_policy->min_capacity(), std::nullopt) {}
+
+        explicit discrete_map(size_t n,
+                              const hasher& hf = Hash(),
+                              const key_equal& eql = Pred(),
+                              const key_allocator_type& a1 = key_allocator_type(),
+                              const value_allocator_type& a2 = value_allocator_type())
+            : _policy(std::make_unique<P>()),
+              _keys(n, a1),
+              _values(n, a2),
+              _index_probe(std::max(_policy->min_capacity(), 2*n), std::nullopt)
+        {}
+
+        template <class InputIterator>
+        discrete_map(InputIterator first,
+                     InputIterator last,
+                     size_t n,
+                     const hasher& hf = hasher(),
+                     const key_equal& eq = key_equal(),
+                     const key_allocator_type& a1 = key_allocator_type(),
+                     const value_allocator_type& a2 = value_allocator_type())
+            : _policy(std::make_unique<P>()),
+              _keys(n, a1),
+              _values(n, a2),
+              _index_probe(std::max(_policy->min_capacity(), 2*n), std::nullopt)               
+        {
+            for (auto it = first; it != last; ++it) {
+                const auto pair = *it;
+                insert(pair.first, pair.second);
+            }
+        }
+
+        // Copy constructor
+        discrete_map(const discrete_map& other)
+            //a class is a friend of itself so no worry about not accessing private members
+            : _policy(std::make_unique<P>(*other._policy)), _index_probe(other._index_probe), _keys(other._keys), _values(other._values)
+        {}
+
+        // Move constructor
+        discrete_map(discrete_map&& other)
+            //same as copy but uses std::move
+            : _policy(std::move(other._policy)), _index_probe(std::move(other._index_probe)), _keys(std::move(other._keys)), _values(std::move(other._values))
+        {}
+
+        explicit discrete_map(const KeyAllocator& a1, const KeyAllocator& a2)
+            : unordered_map(0, hasher(), key_equal(), a1, a2)
+        {}
+
+        discrete_map(const discrete_map& other, const type_identity_t<KeyAllocator>& a1, const type_identity_t<ValueAllocator>& a2)
+            : discrete_map(other)
+        {}
+
+        discrete_map(discrete_map&& other, const type_identity_t<KeyAllocator>& a1, const type_identity_t<ValueAllocator>& a2)
+            : discrete_map(std::move(other))
+        {}
+
+        discrete_map(size_t n, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(n, hasher(), key_equal(), a1, a2)
+        {}
+
+        discrete_map(size_t n, const hasher& hf, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(n, hf(), key_equal(), a1, a2)
+        {}
+
+        template<class InputIterator>
+        discrete_map(InputIterator f, InputIterator l, size_t n, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(f, l, n, hasher(), key_equal(), a1, a2)
+        {}
+
+        template<class InputIterator>
+        discrete_map(InputIterator f, InputIterator l, size_t n, const hasher& hf, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(f, l, n, hf, a1, a2)
+        {}
+
+        //template<container-compatible-range <value_type> R>
+        //discrete_map(from_range_t R&& rg, size_t n, const key_allocator_type& a1, const value_allocator_type& a2)
+        //    : discrete_map
+        //{}
+
+        discrete_map(initializer_list<value_type> il, size_t n, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(il, n, hasher(), key_equal(), a1, a2)
+        {}
+
+        discrete_map(initializer_list<value_type> il, size_t n, const hasher& hf, const key_allocator_type& a1, const value_allocator_type& a2)
+            : discrete_map(il, n, hf, key_equal(), a1, a2)
+        {}
+
+        ~discrete_map() = default // <---------------------- DESTRUCTOR HERE
+
+
+        discrete_map& operator=(const discrete_map& other) {
+            if (this != &other) {
+                _policy = std::make_unique<P>(*other._policy);
+                _index_probe = other._index_probe;
+                _keys = other._keys;
+                _values = other._values;
+            }
+            return *this;
+        }
+
+        discrete_map& operator=(discrete_map&& other) {
+            if (this != &other) {
+                _policy = std::move(other._policy);
+                _index_probe = std::move(other._index_probe);
+                _keys = std::move(other._keys);
+                _values = std::move(other._values);
+            }
+            return *this;
+        }
 
 //iterators
 
         class iterator {
             private:
-                std::vector<Key>::iterator _key_it;
-                std::vector<T>::iterator _val_it;
+                using ValueIterator = typename std::vector<T, ValueAllocator>::iterator;
+                
+                key_iterator _key_it;
+                ValueIterator _val_it;
+
             public:
-                iterator(std::vector<Key>::iterator kter, std::vector<T>::iterator vter) : _key_it(kter), _val_it(vter) {}
-                iterator& operator++() {
+                iterator(std::vector<Key>::iterator kiter, std::vector<T>::iterator viter) : _key_it(kiter), _val_it(viter) {}
+                iterator& operator++() requires BidirectionalIterator {
                     ++_key_it;
                     ++_val_it;
                     return *this;
                 }
-                iterator& operator--() {
+                iterator& operator--() requires BidirectionalIterator {
                     --_key_it;
                     --_val_it;
                     return *this;
                 }
-                std::pair<const Key&, T&> operator*() {
+                std::pair<const Key&, T&> operator*() requires BidirectionalIterator {
                         return { *_key_it, *_val_it };
                 }
-                bool operator==(const iterator& other) {
+                bool operator==(const iterator& other) requires BidirectionalIterator {
                         return _key_it == other._key_it;
                 }
-                bool operator!=(const iterator& other) {
+                bool operator!=(const iterator& other) requires BidirectionalIterator {
                         return _key_it != other._key_it;
                 }
         };
 
         class const_iterator {
             private:
-                std::vector<Key>::const_iterator _key_it;
-                std::vector<T>::const_iterator _val_it;
+                using ValueIteratorConst = typename std::vector<T, ValueAllocator>::const_iterator;
+
+                key_const_iterator _key_it;
+                ValueIteratorConst _val_it;
+
             public:
-                const_iterator(std::vector<Key>::iterator kter, std::vector<T>::iterator vter) : _key_it(kter), _val_it(vter) {}
-                const_iterator& operator++() {
+                const_iterator(std::vector<Key>::const_iterator kter, std::vector<T>::const_iterator vter) : _key_it(kter), _val_it(vter) {}
+                const_iterator& operator++() requires BidirectionalIterator {
                     ++_key_it;
                     ++_val_it;
                     return *this;
                 }
-                const_iterator& operator--() {
+                const_iterator& operator--() requires BidirectionalIterator {
                     --_key_it;
                     --_val_it;
                     return *this;
                 }
-                std::pair<const Key&, const T&> operator*() const {
+                std::pair<const Key&, const T&> operator*() const requires BidirectionalIterator {
                     return { *_key_it, *_val_it };
                 }
-                bool operator==(const const_iterator& other) const {
+                bool operator==(const const_iterator& other) const requires BidirectionalIterator {
                     return _key_it == other._key_it;
                 }
-                bool operator!=(const const_iterator& other) const {
+                bool operator!=(const const_iterator& other) const requires BidirectionalIterator {
                     return _key_it != other._key_it;
                 }
         };
@@ -155,7 +310,7 @@ class discrete_map {
 //capacity
 
         [[nodiscard]] bool empty() const noexcept {
-            return _keys.size() > 0;
+            return _keys.size() == 0;
         }
 
         size_t size() const noexcept {
@@ -196,7 +351,7 @@ class discrete_map {
                     return true;
                 }
                 //Check for special case -- overwriting value with existing key. We keep waiting if not same.
-                else if (key == _keys[current_kv_index.value()]) {
+                else if (key_eq()(key, _keys[current_kv_index.value()])) {
                     _values[current_kv_index.value()] = value;
                     return true;
                 }
@@ -216,7 +371,7 @@ class discrete_map {
             auto erase_pair_if_index_match = [&](size_t i) {
                 std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
-                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
                     _keys.erase(_keys.begin() + current_kv_index.value());
                     _values.erase(_values.begin() + current_kv_index.value());
                     current_kv_index.reset();
@@ -234,9 +389,24 @@ class discrete_map {
             auto erase_pair_if_index_match = [&](size_t i) {
                 std::optional<size_t>& current_kv_index = _index_probe.at(i);
 
-                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
                     //swap and pop idiom
-                    std::swap(_keys[current_kv_index.value()], _keys.back());
+
+                    //we need to change the index of the back key to reflect its new position
+                    const Key& back_key = _keys.back();
+                    auto change_index_back_key = [&](size_t i){
+                        std::optional<size_t>& ckv2 = _index_probe.at(i);
+                        if (ckv2.has_value() && key_eq()(back_key, _keys[ckv2.value()])) {
+                            ckv2 = _keys[current_kv_index.value()];
+                            return true;
+                        }
+                        return false;
+                    };
+                    size_t back_k2i = _key2index(back_key, _index_probe.size())
+                    _circular_traversal(back_k2i, change_index_back_key);
+
+                    //no do the swap and pop
+                    std::swap(_keys[current_kv_index.value()], back_key);
                     _keys.pop_back();
 
                     std::swap(_values[current_kv_index.value()], _values[current_kv_index.value()])
@@ -254,10 +424,10 @@ class discrete_map {
             return _circular_traversal(k2i, erase_pair_if_index_match);
         }
 
-	template<class H2, class P2>
+    template<class H2, class P2>
         void merge(discrete_map<Key, T, H2, P2>& source) {
 
-	}
+    }
 
 //observers
 
@@ -266,18 +436,32 @@ class discrete_map {
         }
 
         Pred key_eq() const {
-
+            return Pred();
         }
 
 //map operations
 
-        /**
-         * Given a key, checks if the corrosponding value is in this map and if so, returns it by reference.
-         */
-        bool find(const Key& key, T& value) const noexcept {
+        auto find(const Key& key) const noexcept {
+            auto find_logic = [&](size_t i, iterator& it) {
+                const std::optional<size_t>& current_kv_index = _index_probe.at(i);
+                if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
+                    it = begin() + i;
+                    return true;
+                }
+                //did not find
+                it = end();
+                return false;
+            };
+
+            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
+            size_t k2i = _key2index(key, _index_probe.size());
+            return _circular_traversal(k2i, find_logic);
+        }
+
+        bool contains(const K& k) {
             auto find_logic = [&](size_t i) {
                 const std::optional<size_t>& current_kv_index = _index_probe.at(i);
-                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
+                if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
                     value = _values[current_kv_index.value()];
                     return true;
                 }
@@ -290,21 +474,16 @@ class discrete_map {
             return _circular_traversal(k2i, find_logic);
         }
 
-        auto find(const Key& key) const noexcept {
-            auto find_logic = [&](size_t i, iterator& it) {
-                const std::optional<size_t>& current_kv_index = _index_probe.at(i);
-                if (current_kv_index.has_value() && key == _keys[current_kv_index.value()]) {
-                    it = begin() + i;
-                    return true;
-                }
-                //did not find
-                it = end();
-                return false;
-            };
+        size_t count(const K& k) {
+            return contains(k) ? 1 : 0;
+        }
 
-            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
-            size_t k2i = _key2index(key, _index_probe.size());
-            return std::move(_circular_traversal(k2i, find_logic));
+        std::pair<key_iterator, key_iterator> equal_range(const K& k) {
+            return std::equal_range(_keys.begin(), _keys.end(), k);
+        }
+
+        std::pair<key_const_iterator, key_const_iterator> equal_range(const K& k) const {
+            return std::equal_range(_keys.begin(), _keys.end(), k);
         }
 
 //element access
@@ -345,13 +524,14 @@ class discrete_map {
 
 //hash policy
 
-        float load_factor() const noexcept {
-            return static_cast<float>(_keys.size() / _index_probe.size());
+        [[nodiscard]] float load_factor() const noexcept {
+            return static_cast<float>(_keys.size()) / static_cast<float>(_index_probe.size());
         }
 
         void reserve(size_t n) {
             _keys.reserve(n);
             _values.reserve(n);
+            //TODO reserving the index probe?
         }
 
         void rehash(size_t n) {
@@ -380,6 +560,7 @@ class discrete_map {
             };
 
             _circular_traversal(0, move_index_if_slot_avail);
+            _index_probe = the_bigger_probe;
         }
 };
 
