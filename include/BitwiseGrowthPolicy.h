@@ -2,9 +2,9 @@
 #define BITWISE_POLICY_H
 
 #include <cstddef>
-#include "MapPolicy.h"
+#include "GrowthPolicy.h"
 
-struct BitwiseMapPolicy : public MapPolicy {
+struct BitwiseGrowthPolicy : public GrowthPolicy {
     size_t get_index(size_t raw_hash_val, size_t capacity) const noexcept override {
         return raw_hash_val & (capacity - 1);
     } 
@@ -24,10 +24,6 @@ struct BitwiseMapPolicy : public MapPolicy {
             value <<= 1;
         }
         return value;
-    }
-
-    constexpr float threshold() const noexcept override {
-        return 0.8f;
     }
 };
 
