@@ -19,6 +19,8 @@
 #include "HashPolicy.h"
 #include "linear_prober.h"
 
+#define __STATIC_CAST_K_TO_REAL(k) static_cast<const key_type&>(k)
+
 template<class Key,
          class T,
          class Hash = std::hash<Key>,
@@ -28,34 +30,11 @@ template<class Key,
          class KeyAllocator = std::allocator<const Key>,
          class ValueAllocator = std::allocator<T>>
 class discrete_map {
-    private:
-        std::unique_ptr<GrowthPolicy> _growth_pol;
-        std::unique_ptr<HashPolicy> _hash_pol;
-
-        //This vector acts as a container of indices, inspired by unordered_map buckets. It's used to store the shared index of a key-value pair, determined at insertion after the hash function derives the 'bucket'. Unlike the existing STL maps, this vector is what abstracts away probing, resizing, and collision management, keeping these operations separate from the key-value pairs. That allows the kv-pairs can be public const ref& exposed with little risk.
-
-        std::vector<const Key, KeyAllocator> _keys;
-        std::vector<T, ValueAllocator> _values;
-
-        //methods
-
-        size_type _key2index(const Key& k) const noexcept {
-            return _growth_pol->get_index(
-                _hash_pol->hash_function()(k),
-                _hash_pol->size()
-            );
-        } 
-
-        void _grow_next() {
-            size_type new_size = _growth_pol->next_capacity(_hash_pol.size());
-            rehash(new_size);
-        }
-
     public:
         // types
         using key_type = Key;
         using mapped_type = T;
-        using value_type = pair<const Key, T>;
+        using value_type = std::pair<const Key, T>;
         using hasher = Hash;
         using key_equal = Pred;
 
@@ -78,6 +57,51 @@ class discrete_map {
 
         using key_iterator = typename std::vector<Key, KeyAllocator>::iterator;
         using key_const_iterator = typename std::vector<Key, KeyAllocator>::const_iterator;
+    private:
+        using index_iterator = HashPolicy<H, Key, size_t>::index_iterator;
+        using const_index_iterator = HashPolicy<H, Key, size_t>::const_index_iterator;
+
+        std::unique_ptr<GrowthPolicy> _growth_pol;
+        std::unique_ptr<HashPolicy> _hash_pol;
+
+        std::vector<const Key, KeyAllocator> _keys;
+        std::vector<T, ValueAllocator> _values;
+
+        //methods
+
+        void _grow_next() {
+            size_type new_size = _growth_pol->next_capacity(_hash_pol.size());
+            rehash(new_size);
+        }
+
+        size_type _key2index(const Key& k) const noexcept {
+            return _growth_pol->get_index(
+                _hash_pol->hash_function()(k),
+                _hash_pol->size()
+            );
+        } 
+
+        index_iterator find(const key_type& k) {
+
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
+            };
+
+            size_type k2i = _key2index(obj.first);
+            return _hash_pol->probe(k2i, does_key_match);
+        }
+
+        const_index_iterator find(const key_type& k) const {
+
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
+            };
+
+            size_type k2i = _key2index(obj.first);
+            return _hash_pol->probe(k2i, does_key_match);
+        }
+
+    public:
 //construct/copy/destroy
 
         //default
@@ -95,7 +119,7 @@ class discrete_map {
                 const value_allocator_type& a2 = value_allocator_type()
             )
             : _growth_pol(std::make_unique<G>()),
-              _hash_pol(std::make_unique<H>(std::max(2*n, _growth_pol->min_capacity()))),
+              _hash_pol(std::make_unique<H>(std::max(2*n, _growth_pol->min_capacity())), _growth_pol->get_index),
               _keys(n, a1),
               _values(n, a2)
         {}
@@ -114,7 +138,7 @@ class discrete_map {
             : _growth_pol(std::make_unique<P>()),
               _keys(n, a1),
               _values(n, a2),
-              _hash_pol(std::make_unique<H>(std::max(2*n_growth_pol->min_capacity())))               
+              _hash_pol(std::make_unique<H>(std::max(2*n_growth_pol->min_capacity())) _growth_pol->get_index),
         {
             for (auto it = first; it != last; ++it) {
                 const auto pair = *it;
@@ -183,7 +207,7 @@ class discrete_map {
             : discrete_map(il, n, hf, key_equal(), a1, a2)
         {}
 
-        ~discrete_map() = default // <---------------------- DESTRUCTOR HERE
+        ~discrete_map() = default; // <---------------------- DESTRUCTOR HERE
 
 
         discrete_map& operator=(const discrete_map& other) {
@@ -232,82 +256,65 @@ class discrete_map {
 
         class iterator {
             private:
-                using ValueIterator = typename std::vector<T, ValueAllocator>::iterator;
-                
-                key_iterator _key_it;
-                ValueIterator _val_it;
+                size_type likely_index;
+
+                index_iterator reverse_lookup(size_type target) {
+                    return find(_keys[target]);
+                }
 
             public:
-                iterator(std::vector<Key>::iterator kiter, std::vector<T>::iterator viter)
-                    : _key_it(kiter), _val_it(viter)
+                iterator(size_type kv_index)
+                    : i(kv_index), probe(reverse_lookup(i))
+                iterator(index_iterator p)
+                    : probe(p)
                 {}
+                iterator& next() {
+
+                    //We just want the next valid value in the probe and don't need any other condition.
+                    auto always_true = [&](size_type current_kv_index) {
+                        //return !(key_eq()(_keys[i], _keys[current_kv_index]));
+                        return true;
+                    };
+
+                    index_iterator tmp;
+                    
+                    for (size_type i = 0; !*(tmp).has_value(); i++) {
+                        tmp = _hash_pol->probe(
+                            find(_keys[likely_index]) + 1,
+                            always_true
+                        ) + i;
+                    }
+
+                    likely_index = tmp.value();
+                }
+                bool has_value() {
+                    return *(probe).has_value();
+                }
                 iterator& operator++() requires std::bidirectional_iterator {
-                    ++_key_it;
-                    ++_val_it;
+                    likely_index++;
                     return *this;
                 }
                 iterator& operator--() requires std::bidirectional_iterator {
-                    --_key_it;
-                    --_val_it;
+                    likely_index--;
                     return *this;
                 }
-                std::pair<const Key&, T&> operator*() requires std::bidirectional_iterator {
-                        return { *_key_it, *_val_it };
+                value_type operator*() {
+                    return { _keys[likely_index], _values[likely_index] };
                 }
-                bool operator==(const iterator& other) requires std::bidirectional_iterator {
-                        return _key_it == other._key_it;
+                bool operator==(const iterator& other) {
+                    return likely_index == other.likely_index;
                 }
-                bool operator!=(const iterator& other) requires std::bidirectional_iterator {
-                        return _key_it != other._key_it;
-                }
-        };
-
-        class const_iterator {
-            private:
-                using ValueIteratorConst = typename std::vector<T, ValueAllocator>::const_iterator;
-
-                key_const_iterator _key_it;
-                ValueIteratorConst _val_it;
-
-            public:
-                const_iterator(std::vector<Key>::const_iterator kter, std::vector<T>::const_iterator vter)
-                    : _key_it(kter), _val_it(vter)
-                {}
-                const_iterator& operator++() requires std::bidirectional_iterator {
-                    ++_key_it;
-                    ++_val_it;
-                    return *this;
-                }
-                const_iterator& operator--() requires std::bidirectional_iterator {
-                    --_key_it;
-                    --_val_it;
-                    return *this;
-                }
-                std::pair<const Key&, const T&> operator*() const requires std::bidirectional_iterator {
-                    return { *_key_it, *_val_it };
-                }
-                bool operator==(const const_iterator& other) const requires std::bidirectional_iterator {
-                    return _key_it == other._key_it;
-                }
-                bool operator!=(const const_iterator& other) const requires std::bidirectional_iterator {
-                    return _key_it != other._key_it;
+                bool operator!=(const iterator& other) {
+                    return !(likely_index == other.likely_index);
                 }
         };
 
         iterator begin() noexcept {
-            return iterator(_keys.begin(), _values.begin());
+            return iterator(0);
         }
 
         iterator end() noexcept {
-            return iterator(_keys.end(), _values.end());
-        }
-
-        const_iterator begin() const noexcept {
-            return const_iterator(_keys.begin(), _values.begin());
-        }
-
-        const_iterator end() const noexcept {
-            return const_iterator(_keys.end(), _values.end());
+            return iterator(size()-1);
         }
 
         const_iterator cbegin() const noexcept {
@@ -321,7 +328,7 @@ class discrete_map {
 //capacity
 
         [[nodiscard]] bool empty() const noexcept {
-            return _keys.size() == 0;
+            return size() == 0;
         }
 
         size_type size() const noexcept {
@@ -329,66 +336,92 @@ class discrete_map {
         }
 
         size_type max_size() const noexcept {
-            return static_cast<size_type>(_growth_pol->max_capacity() * _growth_pol->threshold());
+            return static_cast<size_type>(_growth_pol->max_capacity() * _hash_pol->threshold());
         }
 
 //modifiers
        
         template<class... Args>
         std::pair<iterator, bool> emplace(Args&&... args) {
-
-        }
-
-        template<class... Args>
-        iterator emplace_hint(const_iterator position, Args&&... args) {
-
+            value_type kv = std::make_pair(std::forward<Args>(args)...);
+            return insert(kv);
         }
 
         std::pair<iterator, bool> insert(const value_type& obj) {
-            //TODO object construction in-place
-            //TODO move semantics
-            //we're just using boring linear probing.
 
-            auto insert_empty = [&](size_type current_kv_index) {
-                if (!current_kv_index.has_value()) {
-                    //this slot is empty so we will store the kv index here.
-
-                    //Check if we need to resize and rebalance. Do this first so we don't need to do 1 extra rebalance.
-                    if (_hash_pol->load_factor() >= _hash_pol->threshold()) {
-                        _grow_next();
-                    }
-
-                    current_kv_index = _keys.size(); 
-                    _keys.push_back(key);
-                    _values.push_back(value);
-
-                    return true;
-                }
-                //Check for special case -- overwriting value with existing key. We keep waiting if not same.
-                else if (key_eq()(key, _keys[current_kv_index.value()])) {
-                    //This version doesn't update existing key. Just return true to exit probing.
-                    //_values[current_kv_index.value()] = value;
-                    return true;
-                }
-
-                //could not insert. we will revisit at the next index.
-                return false;
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
             };
 
-            size_type k2i = _key2index(key);
-            return _hash_pol->probe(k2i, insert_empty);
+            size_type k2i = _key2index(obj.first);
+            index_iterator ix_it = _hash_pol->probe(k2i, does_key_match);
+
+            //if the probe found that the keys match (the only time it can have a value is if keys match)...
+            if (*(ix_it).has_value()) {
+                //according to STL this version doesn't update existing keys.
+                return { iterator(ix_it), false };
+            }
+
+            //handling of where the probe found empty slot.
+
+            iterator result = end();
+
+            *maybe_index.first = size();
+            _keys.push_back(obj.first);
+            _values.push_back(obj.second);
+            
+            return { result, true };
         }
 
         std::pair<iterator, bool> insert(value_type&& obj) {
-            
+
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
+            };
+
+            size_type k2i = _key2index(obj.first);
+            index_iterator ix_it = _hash_pol->probe(k2i, does_key_match);
+
+            //if the probe found that the keys match (the only time it can have a value is if keys match)...
+            if (*(ix_it).has_value()) {
+                //according to STL this version doesn't update existing keys.
+                return { iterator(ix_it), false };
+            }
+
+            //handling of where the probe found empty slot.
+
+            iterator result = end();
+
+            *maybe_index.first = _keys.size();
+            _keys.emplace_back(std::move(obj.first));
+            _values.emplace_back(std::move(obj.second));
+
+            return { result, true };
         }
 
         template<class P>
         std::pair<iterator, bool> insert(P&& obj) {
-
+            value_type kv = std::make_pair(std::forward<P>(obj));
+            return insert(kv);
         }
 
         iterator insert(const_iterator hint, const value_type& obj) {
+
+            if (!hint.has_value()) {
+
+            }
+
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
+            };
+
+            size_type k2i = _key2index(obj.first);
+            index_iterator ix_it = _hash_pol->probe(hint, does_key_match);
+
+            if (*(ix_it).has_value()) {
+
+            }
+
 
         }
 
@@ -417,67 +450,80 @@ class discrete_map {
         /**
          * Erases a pair, given a key.
          */
-        bool erase(const Key& k) noexcept {
-            auto erase_pair_if_index_match = [&](std::optional<size_type>& current_kv_index) {
+        bool erase(const key_type& k) noexcept {
 
-                if (key_eq()(key, _keys[current_kv_index.value()])) {
-                    _keys.erase(_keys.begin() + current_kv_index.value());
-                    _values.erase(_values.begin() + current_kv_index.value());
-                    current_kv_index.reset();
-                    return true;
-                }
-                //did not erase         
-                return false;
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
             };
+
             size_type k2i = _key2index(k);
-            _hash_pol->probe(k2i, erase_pair_if_index_match)
+            std::pair<index_iterator, bool> maybe_index = _hash_pol->probe(k2i, insert_empty_copy);
+
+            //if the probe found that keys match...
+            if (maybe_index.second) {
+                // erasey timey
+                _keys.erase(_keys.begin() + *(maybe_index.first).value());
+                _values.erase(_values.begin() + *(maybe_index.first).value());
+                *(maybe_index.first) = std::nullopt;
+            }
+
+            return false;
         }
 
         /**
          * Erases a pair, given a key. This version is faster than erase() but it disregards insertion order.
          */
-        //bool erase_unordered(const Key& key) noexcept {
-        //    auto erase_pair_if_index_match = [&](std::optional<size_type>& current_kv_index) {
+        bool erase_unordered(const key_type& k) noexcept {
+            //swap and pop idiom.
 
-        //        if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
-        //            //swap and pop idiom
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
+            };
 
-        //            //we need to change the index of the back key to reflect its new position
-        //            const Key& back_key = _keys.back();
-        //            auto change_index_back_key = [&](size_type i){
-        //                std::optional<size_type>& ckv2 = _hash_pol.at(i);
-        //                if (ckv2.has_value() && key_eq()(back_key, _keys[ckv2.value()])) {
-        //                    ckv2 = _keys[current_kv_index.value()];
-        //                    return true;
-        //                }
-        //                return false;
-        //            };
-        //            size_type back_k2i = _key2index(back_key, _hash_pol.size())
-        //            _circular_traversal(back_k2i, change_index_back_key);
+            size_type k2i = _key2index(k);
+            std::pair<index_iterator, bool> maybe_index = _hash_pol->probe(k2i, insert_empty_copy);
 
-        //            //no do the swap and pop
-        //            std::swap(_keys[current_kv_index.value()], back_key);
-        //            _keys.pop_back();
+            if (maybe_index.second) {
 
-        //            std::swap(_values[current_kv_index.value()], _values[current_kv_index.value()])
-        //            _keys.pop_back();
+                //do a reverse lookup on the last key so that we can swap the index with the one we're removing.
+                //TODO remove dirty direction
+                std::optional<size_type> index_of_last_key = *(find(_keys[keys.size() - 1]));
+                
+                std::optional<size_type> i = *(maybe_index.first).value();
 
-        //            current_kv_index.reset();
+                std::swap(_keys[i], _keys.end());
+                std::swap(_values[i], _values.end());
 
-        //            return true;
-        //        }
-        //        //did not erase         
-        //        return false;
-        //    };
-        //    //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
-        //    size_type k2i = _key2index(key, _hash_pol.size());
-        //    return _circular_traversal(k2i, erase_pair_if_index_match);
-        //}
+                _keys.pop_back();
+                _values.pop_back();
+                i = index_of_last_key;
+                index_of_last_key = std::nullopt;
 
-    template<class H2, class P2>
-    void merge(discrete_map& source) {
+            }
+            return false;
+        }
 
-    }
+        value_type extract(const_iterator position) {
+
+        }
+
+        value_type extract(const key_type& x) {
+            index_iterator maybe_index = find(x);
+            if (*maybe_index.has_value()) {
+                
+            }
+        }
+
+        void clear() noexcept {
+            _keys.clear();
+            _values.clear();
+            _hash_pol->clear();
+        }
+
+        template<class H2, class P2>
+        void merge(discrete_map& source) {
+
+        }
 
 //observers
 
@@ -485,67 +531,102 @@ class discrete_map {
             return Pred();
         }
 
+        hasher hash_function() const {
+            return _hash_pol->hash_function();
+        }
+
 //map operations
 
-        auto find(const Key& key) const noexcept {
-            auto find_logic = [&](size_type current_kv_index) {
-                if (key_eq()(key, _keys[current_kv_index.value()])) {
-                    return true;
-                }
-                return false;
+        iterator find(const key_type& k) {
+            auto find_pred = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
             };
 
-            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
-            size_type k2i = _key2index(key);
-            std::optional<auto> possible_iterator = _hash_pol->probe(k2i, find_logic);
-            return possible_iterator.has_value() ? possible_iterator.value() : _hash_pol->end();
+            size_type hash_index = _key2index(k);
+            index_iterator ix_it = _hash_pol->probe(hash_index, find_pred);
+
+            return iterator(ix_it);
         }
 
-        bool contains(const K& k) {
-            bool found = false;
-            auto contains_logic = [&](std::optional<size_type>& current_kv_index) {
-                if (current_kv_index.has_value() && key_eq()(key, _keys[current_kv_index.value()])) {
-                    found = true;
-                    return true;
-                }
-                //did not find
-                return false;
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        iterator find(const K& k) {
+            return find(__STATIC_CAST_K_TO_REAL(k));
+        }
+
+        const_iterator find(const key_type& k) const {
+            auto find_pred = [&](size_type current_kv_index) {
+                return key_eq()(key, _keys[current_kv_index]);
             };
 
-            //driver loop. get a starting index from hash function then move down the indices vector from there. circle to beginning of map if end reached.
-            size_type k2i = _key2index(key);
-            _hash_pol->probe(k2i, contains_logic);
-            return found;
+            size_type k2i = _key2index(k);
+            index_iterator ix_it = _hash_pol->probe(k2i, find_pred);
+
+            return const_iterator(ix_it);
         }
 
-        size_type count(const K& k) {
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        const_iterator find(const K& k) const {
+            return find(__STATIC_CAST_K_TO_REAL(k));
+        }
+
+        size_type count(const key_type& k) {
             return contains(k) ? 1 : 0;
         }
 
-        std::pair<key_iterator, key_iterator> equal_range(const K& k) {
-            return std::equal_range(_keys.begin(), _keys.end(), k);
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        size_type count(const K& k) {
+            return count(__STATIC_CAST_K_TO_REAL(k));
         }
 
-        std::pair<key_const_iterator, key_const_iterator> equal_range(const K& k) const {
-            return std::equal_range(_keys.begin(), _keys.end(), k);
+        bool contains(const key_type& k) {
+            iterator result = find(k);
+            return result.has_value();
+        }
+
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        bool contains(const K& k) {
+            return contains(__STATIC_CAST_K_TO_REAL(k));
+        }
+
+        std::pair<iterator, iterator> equal_range(const key_type& k) {
+            return std::equal_range(begin(), end(), k);
+        }
+
+        std::pair<const_iterator, const_iterator> equal_range(const key_type& k) const {
+            return std::equal_range(cbegin(), cend(), k);
+        }
+
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        std::pair<iterator, iterator> equal_range(const K& k) {
+            return equal_range(__STATIC_CAST_K_TO_REAL(k));
+        }
+
+        template<class K,
+                 class = std::enable_if_t<std::is_convertible<K, key_type>>>
+        std::pair<const_iterator, const_iterator> equal_range(const K& k) const {
+            return equal_range(__STATIC_CAST_K_TO_REAL(k));
         }
 
 //element access
 
-        T& operator[](const Key& k) {
+        mapped_type& operator[](const key_type& k) {
             T* result;
-            if(!find(k, result)) {
+            if(!find(k, *result)) {
                insert(k, T{});
-               find(k, result);
             }
             return *result;
         }
 
-        T& operator[](Key&& k) {
+        const_iterator operator[](const key_type& k) const {
             T* result;
-            if(!find(k, result)) {
-               insert(std::move(k), T{});
-               find(k, result);
+            index_iterator maybe_index = find(k);
+            if(!find(k)) {
+               insert(k, T{});
             }
             return *result;
         }
@@ -578,8 +659,8 @@ class discrete_map {
             //TODO reserving the index probe?
         }
 
-        void rehash(size_type n) {
-            _hash_pol->rehash(n, _keys, _growth_pol->next_index)
+        void rehash(size_type next) {
+            _hash_pol->rehash(next, _keys)
         }
 };
 

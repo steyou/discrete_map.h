@@ -5,11 +5,13 @@
 #include "GrowthPolicy.h"
 
 struct BitwiseGrowthPolicy : public GrowthPolicy {
-    size_t get_index(size_t raw_hash_val, size_t capacity) const noexcept override {
+    template<class T>
+    T get_index(T raw_hash_val, T capacity) const noexcept override {
         return raw_hash_val & (capacity - 1);
     } 
 
-    size_t next_capacity(size_t capacity) const noexcept override {
+    template<class T>
+    T next_capacity(T capacity) const noexcept override {
         return capacity << 1;
     }
 

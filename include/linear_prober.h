@@ -1,27 +1,21 @@
 #ifndef LINEAR_PROBER_H
 #define LINEAR_PROBER_H
 
+#include <vector>
 #include <optional>
 
-template<class Hash,
-         class Size = size_t>
-class linear_prober : public HashPolicy<Hash, Size> {
-    private:
-        using super = HashPolicy<Hash, Size>
+template<class Hash, class Key, class Size=size_t>
+class linear_prober : public HashPolicy<Hash, Key, Size>
+{
     public:
-        using hasher = typename super::hasher;
-        using size_type = typename super::size_type;
+        linear_prober() = default;
+        ~linear_prober() = default;
 
-        linear_prober(size_type initial_capacity)
-            : _indices(initial_capacity, std::nullopt)
-        {}
-
-        size_type size() const noexcept {
-            return _indices.size();
-        }
+    private:
 
         class iterator {
             private:
+                using index_type = typename HashPolicy<Hash, Key, Size>::index_type;
                 using IndexIterator = typename std::vector<index_type>::iterator; 
                 IndexIterator _current;
                 IndexIterator _begin;
@@ -36,16 +30,28 @@ class linear_prober : public HashPolicy<Hash, Size> {
                     }
                     return *this;
                 }
+                iterator operator+(int n) const {
+                    int i = std::distance(_begin, _current) + n;
+
+                    if (i >= std::distance(_begin, _end)) {
+                        _current = _begin + (i - std::distance(_begin, _end));
+                    }
+                    else {
+                        _current += i;
+                    }
+
+                    return *this;
+                }
                 index_type& operator*() const {
                     return *_current;
                 }
-                bool operator==(iterator& other) const {
-                    return _current == other;
+                bool operator==(const iterator& other) const {
+                    return _current == other._current;
                 }
-                bool operator!=(iterator& other) const {
-                    return !(_current == other);
+                bool operator!=(const iterator& other) const {
+                    return !(_current == other._current);
                 }
-        }
+        };
 
         iterator begin() noexcept override {
             return iterator(_indices.begin(), _indices.begin(), _indices.end());
@@ -55,80 +61,9 @@ class linear_prober : public HashPolicy<Hash, Size> {
             return iterator(_indices.begin(), _indices.end(), _indices.begin());
         }
 
-        hasher hash_function() const override {
-            return Hash();
-        }
-
         constexpr float threshold() const noexcept override {
             return 0.7f;
         }
-
-        [[nodiscard]] float load_factor(size_type num_elements) const noexcept override {
-            return static_cast<float>(num_elements) / static_cast<float>(_indices.size());
-        }
-
-        std::optional<std::pair<iterator, bool>> probe(size_type start, std::function<bool(index_type&)> callback) const override {
-            //loop until some condition happens in the callback.
-            for (auto it = begin() + start; it != end(); ++it) {
-                std::optional<size_type> index = *it;
-                if (index.has_value()) {
-                    if (callback(index.value())) return std::make_pair(it, true);
-                }
-                else {
-                    //empty slot
-                    return std::make_pair(it, false);
-                }
-            }
-            //if we reach here something's gone wrong. It implies _indices is full, which is undefinend behavior.
-            return std::nullopt; //the behavior of whatever we're calling did not happen. whether that's good or bad is not this function's responsibility.
-        }
-
-        template<class R>
-        std::optional<std::tuple<iterator, bool R>> probe(size_type start, std::function<bool(index_type&, R*)> callback) const override {
-            //loop until some condition happens in the callback.
-            R result = nullptr;
-            for (auto it = begin() + start; it != end(); ++it) {
-                std::optional<size_type> index = *it;
-                if (index.has_value()) {
-                    if (callback(index, R)) return std::make_tuple(it, true, result);
-                }
-                else {
-                    return std::make_tuple(it, false, result);
-                }
-            }
-            //if we reach here something's gone wrong. It implies _indices is full, which is undefinend behavior.
-            return std::nullopt; //the behavior of whatever we're calling did not happen. whether that's good or bad is not this function's responsibility.
-        }
-
-        void rehash(size_type n, std::vector<const Key>& keys, std::function<size_type>(size_type, size_type) indexer) {
-            //TODO: benchmark whether calling reserve() at the end is beneficial
-
-            if (n <= _indices.size()) {
-                return;
-            }
-
-            //define a new array
-            std::vector<index_type> the_bigger_probe(n, std::nullopt);
-
-            for (auto it = begin(); it != end(); ++it) {
-
-                std::optional<size_type> index = *it;
-
-                if (index.has_value()) {
-                    size_type index_for_bigger_probe = indexer(
-                        hash_function()(_keys[index.value()]),
-                        n
-                    );
-                    the_bigger_probe[index_for_bigger_probe] = std::move(old_kv_index);
-                }
-
-            }
-
-            _indices = the_bigger_probe;
-        }
-
-    private:
-        std::vector<index_type> _indices;
-}
+};
 
 #endif
