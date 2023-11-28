@@ -7,7 +7,6 @@ template<class Hash, class Key, class Size=size_t>
 class HashPolicy {
     public:
         using hasher = Hash;
-        using iterator = I;
 
     private:
         using size_type = Size; //private because you're supposed to know this elsewhere.
@@ -26,11 +25,9 @@ class HashPolicy {
 //begin virtual methods
 
     public:
-        template<std::forward_iterator I>
-        virtual I begin() noexcept = 0;
+        virtual index_iterator begin() noexcept = 0;
 
-        template<std::forward_iterator I>
-        virtual I end() noexcept = 0;
+        virtual index_iterator end() noexcept = 0;
 
         virtual constexpr float threshold() const noexcept = 0;
 
@@ -58,30 +55,6 @@ class HashPolicy {
 
         [[nodiscard]] float load_factor(size_type num_elements) const noexcept {
             return static_cast<float>(num_elements) / static_cast<float>(_indices.size());
-        }
-
-        index_type probe(size_type start, std::function<bool(index_type&)> callback) {
-            return probe(begin() + start, callback);
-        }
-
-        index_type probe(index_iterator start, std::function<bool(index_type&)> callback) {
-            //loop until some condition happens in the callback.
-            for (auto it = start; it != end(); ++it) {
-                index_type index = *it;
-                if (index.has_value()) {
-                    if (callback(index.value())) {
-                        return index;
-                    }
-                    //if false, the callback indicated to continue probing.
-                }
-                else {
-                    //empty slot. under simple open addressing we stop here.
-                    return index;
-                }
-            }
-            //If we reach here something's gone wrong. It implies _indices is full. It shouldn't be full. Do an emergency resize, but we're probably going to Davy Jones' Locker.
-            rehash(2*_keys.size());
-            return probe(start, callback);
         }
 
         index_iterator probe(size_type start, std::function<bool(index_type&)> callback) {

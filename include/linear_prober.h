@@ -54,11 +54,11 @@ class linear_prober : public HashPolicy<Hash, Key, Size>
         };
 
         iterator begin() noexcept override {
-            return iterator(_indices.begin(), _indices.begin(), _indices.end());
+            return iterator(this->_indices.begin(), this->_indices.begin(), this->_indices.end());
         }
 
         iterator end() noexcept override {
-            return iterator(_indices.begin(), _indices.end(), _indices.begin());
+            return iterator(this->_indices.begin(), this->_indices.end(), this->_indices.begin());
         }
 
         constexpr float threshold() const noexcept override {
