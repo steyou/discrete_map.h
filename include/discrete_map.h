@@ -26,7 +26,7 @@ template<class Key,
          class Hash = std::hash<Key>,
          class Pred = std::equal_to<Key>,
          class G = BitwiseGrowthPolicy,
-         class H = linear_prober<Hash, size_t>,
+         class H = linear_prober<Hash, Key, size_t>,
          class KeyAllocator = std::allocator<const Key>,
          class ValueAllocator = std::allocator<T>>
 class discrete_map {
@@ -58,8 +58,10 @@ class discrete_map {
         using key_iterator = typename std::vector<key_type, key_allocator_type>::iterator;
         using key_const_iterator = typename std::vector<key_type, key_allocator_type>::const_iterator;
     private:
-        using index_iterator = HashPolicy<hasher, key_type, size_type>::index_iterator;
-        using const_index_iterator = HashPolicy<hasher, key_type, size_type>::const_index_iterator;
+        //using index_iterator = HashPolicy<hasher, key_type, size_type>::index_iterator;
+        //using const_index_iterator = HashPolicy<hasher, key_type, size_type>::const_index_iterator;
+        using probe_type = HashPolicy<hasher, key_type, size_type>;
+        using index_element = typename probe_type::index_element;
 
         std::unique_ptr<GrowthPolicy> _growth_pol;
         std::unique_ptr<HashPolicy<hasher, key_type, size_type>> _hash_pol;
@@ -73,41 +75,59 @@ class discrete_map {
             size_type new_size = _growth_pol->next_capacity(_hash_pol.size());
             rehash(new_size);
         }
+        
+        index_element& probe_find(const key_type& k) {
 
-        size_type _key2index(const Key& k) const noexcept {
-            return _growth_pol->get_index(
-                _hash_pol->hash_function()(k),
-                _hash_pol->size()
-            );
+            auto does_key_match = [&](size_type current_kv_index) {
+                return key_eq()(k, _keys[current_kv_index]);
+            };
+
+            size_type key_to_index = _growth_pol->get_index(
+                    _hash_pol->hash_function()(k),
+                    _hash_pol->size()
+                );
+
+            return _hash_pol->probe(key_to_index, does_key_match);
         } 
 
-        index_iterator probe_find(const key_type& k) {
+        index_element& probe_find(key_type&& k) {
 
             auto does_key_match = [&](size_type current_kv_index) {
-                return key_eq()(k.first, _keys[current_kv_index]);
+                return key_eq()(std::forward(k), _keys[current_kv_index]);
             };
 
-            size_type k2i = _key2index(k.first);
-            return _hash_pol->probe(k2i, does_key_match);
-        }
+            size_type key_to_index = _growth_pol->get_index(
+                    _hash_pol->hash_function()(std::forward(k)),
+                    _hash_pol->size()
+                );
 
-        const_index_iterator probe_find(const key_type& k) const {
-
-            auto does_key_match = [&](size_type current_kv_index) {
-                return key_eq()(k.first, _keys[current_kv_index]);
-            };
-
-            size_type k2i = _key2index(k.first);
-            return _hash_pol->probe(k2i, does_key_match);
+            return _hash_pol->probe(key_to_index, does_key_match);
         }
 
     public:
 //construct/copy/destroy
 
+        ////default
+        //discrete_map()
+            //: _growth_pol(std::make_unique<G>()),
+              //_hash_pol(std::make_unique<H>(
+                    //_growth_pol->min_capacity(),
+                    //_growth_pol->get_index
+                //))
+        //{}
+
         //default
-        discrete_map()
+
+          discrete_map()
             : _growth_pol(std::make_unique<G>()),
-              _hash_pol(std::make_unique<H>(_growth_pol->min_capacity()))
+              _keys(),
+              _values(),
+              _hash_pol(std::make_unique<H>(
+                        _growth_pol->min_capacity(), 
+                        _keys,
+                        [this](size_t raw_hash_val, size_t capacity) {
+                            return _growth_pol->get_index(raw_hash_val, capacity);
+                        }))
         {}
 
         explicit discrete_map
@@ -157,8 +177,8 @@ class discrete_map {
             //a class is a friend of itself so no worry about not accessing private members
             : _growth_pol(std::make_unique<G>(*other._growth_pol)),
               _hash_pol(other._hash_pol),
-              _keys(other._keys, other.key_allocator_type),
-              _values(other._values, other.value_allocator_type)
+              _keys(other._keys, key_allocator_type()),
+              _values(other._values, value_allocator_type())
         {}
 
         // Move constructor
@@ -166,8 +186,8 @@ class discrete_map {
             //same as copy but uses std::move
             : _growth_pol(std::move(other._growth_pol)),
               _hash_pol(std::move(other._hash_pol)),
-              _keys(std::move(other._keys), std::move(other.key_allocator_type)),
-              _values(std::move(other._values), std::move(other.key_allocator_type))
+              _keys(std::move(other._keys), std::move(key_allocator_type())),
+              _values(std::move(other._values), std::move(key_allocator_type()))
         {}
 
         explicit discrete_map(const KeyAllocator& a1, const KeyAllocator& a2)
@@ -258,56 +278,95 @@ class discrete_map {
 
         class iterator {
             private:
-                size_type likely_index;
-
-                index_iterator reverse_lookup(size_type target) {
-                    return find(_keys[target]);
-                }
+                size_type _index;
 
             public:
-                iterator(size_type kv_index)
-                    : i(kv_index), probe(reverse_lookup(i))
-                iterator(index_iterator p)
-                    : probe(p)
+                iterator(const size_type& i)
+                    : _index(i) 
                 {}
-                iterator& next() {
+                iterator(size_type i)
+                    : _index(i)
+                {}
 
-                    //We just want the next valid value in the probe and don't need any other condition.
-                    auto always_true = [&](size_type current_kv_index) {
-                        //return !(key_eq()(_keys[i], _keys[current_kv_index]));
-                        return true;
-                    };
-
-                    index_iterator tmp;
-                    
-                    for (size_type i = 0; !*(tmp).has_value(); i++) {
-                        tmp = _hash_pol->probe(
-                            find(_keys[likely_index]) + 1,
-                            always_true
-                        ) + i;
-                    }
-
-                    likely_index = tmp.value();
+                value_type operator*() {
+                    return { _keys[_index], _values[_index] };
                 }
-                bool has_value() {
-                    return *(probe).has_value();
-                }
+
+                //postincrement
                 iterator& operator++() {
-                    likely_index++;
+                    _index++;
                     return *this;
                 }
                 iterator& operator--() {
-                    likely_index--;
+                    _index--;
                     return *this;
                 }
-                value_type operator*() {
-                    return { _keys[likely_index], _values[likely_index] };
+                //preincrement 
+                iterator operator++(int) {
+                    iterator temp = *this;
+                    ++(*this);
+                    return temp;
                 }
+                iterator operator--(int) {
+                    iterator temp = *this;
+                    --(*this);
+                    return temp;
+                }
+
+                //equality
                 bool operator==(const iterator& other) {
-                    return likely_index == other.likely_index;
+                    //compares whether we are looking at the same pair. since the index is unique for a pair, we just compare the indices.
+                    return _index == other._index;
                 }
                 bool operator!=(const iterator& other) {
-                    return !(likely_index == other.likely_index);
+                    return !(*this == other);
+                }
+        };
+
+        class const_iterator {
+            private:
+                size_type _index;
+
+            public:
+                const_iterator(const size_type& i)
+                    : _index(i) 
+                {}
+                const_iterator(size_type i)
+                    : _index(i)
+                {}
+
+                const value_type operator*() const {
+                    return { _keys[_index], _values[_index] };
+                }
+
+                //postincrement
+                const_iterator& operator++() {
+                    _index++;
+                    return *this;
+                }
+                const_iterator& operator--() {
+                    _index--;
+                    return *this;
+                }
+                //preincrement 
+                const_iterator operator++(int) {
+                    iterator temp = *this;
+                    ++(*this);
+                    return temp;
+                }
+                const_iterator operator--(int) {
+                    iterator temp = *this;
+                    --(*this);
+                    return temp;
+                }
+
+                //equality
+                bool operator==(const const_iterator& other) const {
+                    //compares whether we are looking at the same pair. since the index is unique for a pair, we just compare the indices.
+                    return _index == other._index;
+                }
+                bool operator!=(const const_iterator& other) const {
+                    return !(*this == other);
                 }
         };
 
@@ -316,15 +375,15 @@ class discrete_map {
         }
 
         iterator end() noexcept {
-            return iterator(size()-1);
+            return iterator(size());
         }
 
         const_iterator cbegin() const noexcept {
-            return const_iterator(_keys.begin(), _values.begin());
+            return const_iterator(0);
         }
 
         const_iterator cend() const noexcept {
-            return const_iterator(_keys.end(), _values.end());
+            return const_iterator(size());
         }
 
 //capacity
@@ -351,19 +410,19 @@ class discrete_map {
 
         std::pair<iterator, bool> insert(const value_type& obj) {
 
-            index_iterator ix_it = probe_find(obj.first);
+            index_element& maybe_index = probe_find(obj.first);
 
             //if the probe found that the keys match (the only time it can have a value is if keys match)...
-            if (*(ix_it).has_value()) {
+            if (maybe_index.has_value()) {
                 //according to STL this version doesn't update existing keys.
-                return { iterator(ix_it), false };
+                return { iterator(maybe_index.value()), false };
             }
 
             //handling of where the probe found empty slot.
 
             iterator result = end();
 
-            *(ix_it) = size();
+            maybe_index = size();
             _keys.push_back(obj.first);
             _values.push_back(obj.second);
             
@@ -372,19 +431,19 @@ class discrete_map {
 
         std::pair<iterator, bool> insert(value_type&& obj) {
 //TODO forwarding
-            index_iterator ix_it = probe_find(obj.first);
+            index_element& maybe_index = probe_find(obj.first);
 
             //if the probe found that the keys match (the only time it can have a value is if keys match)...
-            if (*(ix_it).has_value()) {
+            if (maybe_index.has_value()) {
                 //according to STL this version doesn't update existing keys.
-                return { iterator(ix_it), false };
+                return { iterator(maybe_index.value()), false };
             }
 
             //handling of where the probe found empty slot.
 
             iterator result = end();
 
-            *(ix_it) = _keys.size();
+            maybe_index = _keys.size();
             _keys.emplace_back(std::move(obj.first));
             _values.emplace_back(std::move(obj.second));
 
@@ -403,9 +462,9 @@ class discrete_map {
 
             }
 
-            index_iterator ix_it = probe_find(obj.first);
+            index_element& maybe_index = probe_find(obj.first);
 
-            if (*(ix_it).has_value()) {
+            if (maybe_index.has_value()) {
 
             }
 
@@ -439,14 +498,15 @@ class discrete_map {
          */
         bool erase(const key_type& k) noexcept {
 
-            index_iterator ix_it = probe_find(k.first);
+            index_element& maybe_index = probe_find(k.first);
 
             //if the probe found that keys match...
-            if (*(ix_it).has_value()) {
+            if (maybe_index.has_value()) {
                 // erasey timey
-                _keys.erase(_keys.begin() + *(ix_it).value());
-                _values.erase(_values.begin() + *(ix_it).value());
-                *(ix_it) = std::nullopt;
+                _keys.erase(_keys.begin() + maybe_index.value());
+                _values.erase(_values.begin() + maybe_index.value());
+                maybe_index = std::nullopt;
+                return true;
             }
 
             return false;
@@ -458,15 +518,15 @@ class discrete_map {
         bool erase_unordered(const key_type& k) noexcept {
             //swap and pop idiom.
 
-            index_iterator ix_it = probe_find(k.first);
+            index_element& maybe_index = probe_find(k.first);
 
-            if (*(ix_it).has_value()) {
+            if (maybe_index.has_value()) {
 
                 //do a reverse lookup on the last key so that we can swap the index with the one we're removing.
                 //TODO remove dirty direction
-                std::optional<size_type> index_of_last_key = *(find(_keys[size() - 1]));
+                std::optional<size_type> index_of_last_key = find(_keys[size() - 1]);
                 
-                std::optional<size_type> i = *(ix_it).value();
+                std::optional<size_type> i = maybe_index.value();
 
                 std::swap(_keys[i], _keys.end());
                 std::swap(_values[i], _values.end());
@@ -485,8 +545,8 @@ class discrete_map {
         }
 
         value_type extract(const key_type& x) {
-            index_iterator maybe_index = find(x);
-            if (*maybe_index.has_value()) {
+            index_element& maybe_index = find(x);
+            if (maybe_index.has_value()) {
                 
             }
         }
@@ -591,7 +651,7 @@ class discrete_map {
 
         const_iterator operator[](const key_type& k) const {
             T* result;
-            index_iterator maybe_index = find(k);
+            index_element maybe_index = find(k);
             if(!find(k)) {
                insert(k, T{});
             }
