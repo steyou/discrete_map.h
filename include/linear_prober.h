@@ -1,84 +1,83 @@
 #ifndef LINEAR_PROBER_H
 #define LINEAR_PROBER_H
 
+#include <functional>
+#include <memory>
 #include <vector>
 #include <optional>
 
-template<class Hash, class Key, class Size=size_t>
-class linear_prober : public HashPolicy<Hash, Key, Size> {
-    public:
-
-        linear_prober(Size initial_capacity, const std::vector<Key, std::allocator<const Key>>& keys, std::function<Size(Size,Size)> indexer)
-            : HashPolicy<Hash, Key, Size>(initial_capacity, keys, indexer)
-        {}
-
-        ~linear_prober() = default;
-
+template<class SizeTraits>
+class linear_prober {
     private:
-        using index_iterator = typename HashPolicy<Hash, Key, Size>::index_iterator;
+        using size_type = typename SizeTraits::size_type;
+        using indices_type = typename SizeTraits::indices_type;
 
-    //protected:
-        using super_iterator_type = typename HashPolicy<Hash, Key, Size>::template iterator<linear_prober>;
-        class iterator : public super_iterator_type {
+        using indices_collection_type = std::vector<indices_type>;
+
+        template<bool is_const>
+        class iterator_impl {
             private:
-                //'import' the equivalent termanology from base class.
-                //likely std::optional
-                using index_element = typename HashPolicy<Hash, Key, Size>::index_element;
+                using inds_cltn_constness_type = typename std::conditional<is_const,
+                    const indices_collection_type,
+                    indices_collection_type
+                >::type;
 
-                //we're wrapping a vector iterator. Actually the this->_indices vector.
-                index_iterator _begin;
-                index_iterator _current;
-                index_iterator _end;
+                using inds_t_constness_type = typename std::conditional<is_const,
+                    const indices_type,
+                    indices_type
+                >::type;
+
+                size_type _current;
+                inds_cltn_constness_type* _indices;
+
             public:
-                iterator(index_iterator first, index_iterator x, index_iterator last)
-                    : _begin(first), _current(x), _end(last)
+                iterator_impl(size_type current, inds_cltn_constness_type& indices)
+                    : _current(current), _indices(&indices)
                 {}
-                void increment() {
+                void operator++() {
                     ++_current;
-                    if (_current == _end) {
-                        _current = _begin;
+                    if (_current >= _indices->size()) {
+                        _current = 0;
                     }
                 }
-                iterator advance(int n) {
-                    iterator self = *this;
-                    int i = std::distance(self._begin, self._current) + n;
-
-                    if (i >= std::distance(self._begin, self._end)) {
-                        self._current = self._begin + (i - std::distance(self._begin, self._end));
-                    }
-                    else {
-                        self._current += i;
-                    }
-                    return self;
+                iterator_impl<is_const> operator+(size_type n) const {
+                    size_type i = _current + n;
+                    return i > _indices->size()
+                        ? iterator_impl<is_const>(i - _indices->size(), *_indices)
+                        : iterator_impl<is_const>(i, *_indices);
                 }
-                index_element& dereference() const {
-                    return *_current;
+                inds_t_constness_type& operator*() const {
+                    return (*_indices)[_current];
                 }
-                bool equals(const iterator& other) const {
-                    return _current == other._current && _begin == other._begin && _end == other._end;
+                bool operator==(const iterator_impl& other) const {
+                    return _current == other._current;
                 }
-                bool inequal(const iterator& other) const {
+                bool operator!=(const iterator_impl& other) const {
                     return !(*this == other);
                 }
         };
 
-        super_iterator_type begin_impl() noexcept {
-            return iterator(this->_indices.begin(), this->_indices.begin(), this->_indices.end());
+    public:
+        using const_iterator = iterator_impl<true>;
+        using iterator = iterator_impl<false>;
+
+        iterator begin(indices_collection_type& indices) noexcept {
+            return iterator(0, indices);
         }
 
-        super_iterator_type end_impl() noexcept {
-            return iterator(this->_indices.begin(), this->_indices.end(), this->_indices.begin());
+        iterator end(indices_collection_type& indices) noexcept {
+            return iterator(indices.size(), indices);
         }
 
-        //super_iterator_type begin() noexcept override {
-        //    return iterator(this->_indices.begin(), this->_indices.begin(), this->_indices.end());
-        //}
+        const_iterator cbegin(const indices_collection_type& indices) const noexcept {
+            return const_iterator(0, indices);
+        }
 
-        //super_iterator_type end() noexcept override {
-        //    return iterator(this->_indices.begin(), this->_indices.end(), this->_indices.begin());
-        //}
+        const_iterator cend(const indices_collection_type& indices) const noexcept {
+            return const_iterator(indices.size(), indices);
+        }
 
-        constexpr float threshold() const noexcept override {
+        constexpr float threshold() const noexcept {
             return 0.5f;
         }
 };
